@@ -1,0 +1,11 @@
+servers:
+- host: localhost
+  route: /
+  upstreams:
+  - http://localhost:8080
+  - http://localhost:8081
+- host: localhost
+  route: /api
+  upstreams:
+  - http://localhost:8080
+  - http://localhost:8081
