@@ -19,6 +19,8 @@ import (
 
 var config Config
 
+var domainMap map[string]*Server
+
 func main() {
 
 	f, err := os.Open("config.yaml")
@@ -32,6 +34,16 @@ func main() {
 		panic(err)
 	}
 
+	domainMap = make(map[string]*Server)
+	for i := range config.Servers {
+		configHost, err := url.Parse("http://" + config.Servers[i].Host)
+		if err != nil {
+			log.Println("Error parse host:", err)
+			continue
+		}
+		domainMap[configHost.Hostname()] = &config.Servers[i]
+	}
+
 	fmt.Println("Starting server...")
 	http.HandleFunc("/", webHandler)
 	http.ListenAndServe(":8080", nil)
@@ -43,51 +55,60 @@ func webHandler(r http.ResponseWriter, req *http.Request) {
 
 	errCount := 0
 
-	//log.Println("Request:", host, route)
+	log.Println("Request:", host, route)
 
-	for i := range config.Servers {
-		reqPath := urlpath.New(config.Servers[i].Route)
+	u, err := url.Parse("http://" + host)
+	if err != nil {
+		log.Println("Error parse host:", err)
+		return
+	}
 
-		if host == config.Servers[i].Host {
-			if _, ok := reqPath.Match(route); ok {
+	server, ok := domainMap[u.Hostname()]
+	if !ok {
+		log.Println("Error:", "No server for host:", u.Hostname())
+		http.Error(r, "No server for host: "+u.Hostname(), http.StatusBadRequest)
+		return
+	}
 
-				incrUp := func() {
-					config.Servers[i].mu.Lock()
-					config.Servers[i].upstreamIndex++
-					config.Servers[i].mu.Unlock()
-				}
+	reqPath := urlpath.New(server.Route)
 
-				for errCount < 3 {
-					ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
-					defer cancel()
+	if _, ok := reqPath.Match(route); ok {
 
-					config.Servers[i].mu.RLock()
-					selectedUpstream := config.Servers[i].Upstreams[config.Servers[i].upstreamIndex%len(config.Servers[i].Upstreams)]
-					config.Servers[i].mu.RUnlock()
+		incrUp := func() {
+			server.mu.Lock()
+			server.upstreamIndex++
+			server.mu.Unlock()
+		}
 
-					if req.Header.Get("Upgrade") == "websocket" {
-						log.Println("Switching protocols")
-						handleWebsocket(r, req, selectedUpstream, route)
-					}
+		for errCount < 3 {
+			ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+			defer cancel()
 
-					_, err := fetchUpstream(ctx, req.Method, req.Body, host, route, selectedUpstream, r)
-					if err != nil {
-						errCount++
-						log.Println("Error:", err)
-						incrUp()
-						continue
-					}
-					incrUp()
-					errCount = 4
-					break
-				}
-				if errCount == 3 {
-					log.Println("Too many failures. Guessing that upstreams are down.")
-					r.WriteHeader(http.StatusServiceUnavailable)
-					r.Write([]byte("{\"error\":\"Service Unavailable\"}"))
-					return
-				}
+			server.mu.RLock()
+			selectedUpstream := server.Upstreams[server.upstreamIndex%len(server.Upstreams)]
+			server.mu.RUnlock()
+
+			if req.Header.Get("Upgrade") == "websocket" {
+				log.Println("Switching protocols")
+				handleWebsocket(r, req, selectedUpstream, route)
 			}
+
+			_, err := fetchUpstream(ctx, req.Method, req.Body, host, route, selectedUpstream, r)
+			if err != nil {
+				errCount++
+				log.Println("Error:", err)
+				incrUp()
+				continue
+			}
+			incrUp()
+			errCount = 4
+			break
+		}
+		if errCount == 3 {
+			log.Println("Too many failures. Guessing that upstreams are down.")
+			r.WriteHeader(http.StatusServiceUnavailable)
+			r.Write([]byte("{\"error\":\"Service Unavailable\"}"))
+			return
 		}
 	}
 }

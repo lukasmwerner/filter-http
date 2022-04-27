@@ -1,12 +1,19 @@
 servers:
-- host: localhost:8080
-  route: /api/*
+- host: local.just.here
+  route: /*
   upstreams:
-  - http://localhost:8083
-  - http://localhost:8084
+  - http://nginx1
+  - http://nginx2
+- host: local.notreal.xyz
+  route: /*
+  upstreams:
+  - http://httpd
 - host: localhost:8080
   route: /*
   upstreams:
-  - http://localhost:8081
-  - http://localhost:8082
-
+  - http://nginx1
+  - http://nginx2
+- host: abc.localhost:8080
+  route: /*
+  upstreams:
+  - http://httpd
