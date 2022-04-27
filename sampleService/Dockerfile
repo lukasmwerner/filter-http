@@ -20,8 +20,6 @@ FROM scratch AS run
 
 COPY --from=build /out/app /
 
-COPY config.yaml /
-
-EXPOSE 80
+EXPOSE 8080
 
 ENTRYPOINT [ "/app" ]

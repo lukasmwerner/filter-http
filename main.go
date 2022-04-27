@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,9 @@ import (
 var config Config
 
 var domainMap map[string]*Server
+
+var accessLog log.Logger
+var errorLog log.Logger
 
 func main() {
 
@@ -41,21 +45,33 @@ func main() {
 			log.Println("Error parse host:", err)
 			continue
 		}
+		// sort routes by longest to shortest
+		sort.Slice(config.Servers[i].Routes, func(a, b int) bool {
+			return len(config.Servers[i].Routes[a].Route) > len(config.Servers[i].Routes[b].Route)
+		})
 		domainMap[configHost.Hostname()] = &config.Servers[i]
 	}
+	accessLog.SetOutput(os.Stdout)
+	errorLog.SetOutput(os.Stderr)
 
+	fmt.Print("registered domains and routes in matching order:\n\n")
+	for k := range domainMap {
+		for i := range domainMap[k].Routes {
+			fmt.Printf("%s: %s -> %v\n", k, domainMap[k].Routes[i].Route, domainMap[k].Routes[i].Upstreams)
+		}
+	}
+	fmt.Println()
 	fmt.Println("Starting server...")
 	http.HandleFunc("/", webHandler)
-	http.ListenAndServe(":8080", nil)
+	http.ListenAndServe(":80", nil)
 }
 
 func webHandler(r http.ResponseWriter, req *http.Request) {
 	host := req.Host
-	route := req.URL.Path
 
 	errCount := 0
 
-	log.Println("Request:", host, route)
+	log.Println("Request:", req.Method, host, req.URL.Path)
 
 	u, err := url.Parse("http://" + host)
 	if err != nil {
@@ -65,50 +81,51 @@ func webHandler(r http.ResponseWriter, req *http.Request) {
 
 	server, ok := domainMap[u.Hostname()]
 	if !ok {
-		log.Println("Error:", "No server for host:", u.Hostname())
+		errorLog.Println("Error:", "No server for host:", u.Hostname())
 		http.Error(r, "No server for host: "+u.Hostname(), http.StatusBadRequest)
 		return
 	}
 
-	reqPath := urlpath.New(server.Route)
+	for i := range server.Routes {
 
-	if _, ok := reqPath.Match(route); ok {
+		reqPath := urlpath.New(server.Routes[i].Route)
 
-		incrUp := func() {
-			server.mu.Lock()
-			server.upstreamIndex++
-			server.mu.Unlock()
-		}
+		if _, ok := reqPath.Match(req.URL.Path); ok {
 
-		for errCount < 3 {
-			ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
-			defer cancel()
-
-			server.mu.RLock()
-			selectedUpstream := server.Upstreams[server.upstreamIndex%len(server.Upstreams)]
-			server.mu.RUnlock()
-
-			if req.Header.Get("Upgrade") == "websocket" {
-				log.Println("Switching protocols")
-				handleWebsocket(r, req, selectedUpstream, route)
+			incrUp := func() {
+				server.Routes[i].mu.Lock()
+				server.Routes[i].upstreamIndex++
+				server.Routes[i].mu.Unlock()
 			}
 
-			_, err := fetchUpstream(ctx, req.Method, req.Body, host, route, selectedUpstream, r)
-			if err != nil {
-				errCount++
-				log.Println("Error:", err)
+			for errCount < 3 {
+				ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+				defer cancel()
+
+				server.Routes[i].mu.RLock()
+				selectedUpstream := server.Routes[i].Upstreams[server.Routes[i].upstreamIndex%len(server.Routes[i].Upstreams)]
+				server.Routes[i].mu.RUnlock()
+
+				if req.Header.Get("Upgrade") == "websocket" {
+					handleWebsocket(r, req, selectedUpstream, req.URL.String())
+				}
+
+				_, err := fetchUpstream(ctx, req.Method, req.Body, host, req.URL.String(), selectedUpstream, r)
+				if err != nil {
+					errCount++
+					errorLog.Println("Error:", err)
+					incrUp()
+					continue
+				}
 				incrUp()
-				continue
+				errCount = 4
+				break
 			}
-			incrUp()
-			errCount = 4
-			break
-		}
-		if errCount == 3 {
-			log.Println("Too many failures. Guessing that upstreams are down.")
-			r.WriteHeader(http.StatusServiceUnavailable)
-			r.Write([]byte("{\"error\":\"Service Unavailable\"}"))
-			return
+			if errCount == 3 {
+				errorLog.Println("Too many failures. Guessing that upstreams are down.")
+				http.Error(r, fmt.Errorf("error service unavailable: guessing that upstreams are down: too many failures").Error(), http.StatusServiceUnavailable)
+				return
+			}
 		}
 	}
 }
@@ -133,6 +150,10 @@ func fetchUpstream(ctx context.Context, method string, body io.Reader, host stri
 	}
 
 	for k, v := range resp.Header {
+		if k == "Server" {
+			w.Header().Set("Server", "filter-http")
+			continue
+		}
 		w.Header().Set(k, strings.Join(v, ", "))
 	}
 
@@ -154,13 +175,13 @@ func fetchUpstream(ctx context.Context, method string, body io.Reader, host stri
 func handleWebsocket(r http.ResponseWriter, req *http.Request, selectedUpstream string, route string) {
 	source, err := websocket.Accept(r, req, nil)
 	if err != nil {
-		log.Println("Error accept websocket:", err)
+		errorLog.Println("Error accept websocket:", err)
 		return
 	}
 
 	u, err := url.Parse(selectedUpstream)
 	if err != nil {
-		log.Println("Error parse upstream:", err)
+		errorLog.Println("Error parse upstream:", err)
 		return
 	}
 	u.Path = path.Join(u.Path, route)
@@ -169,7 +190,7 @@ func handleWebsocket(r http.ResponseWriter, req *http.Request, selectedUpstream 
 	upstream, _, err := websocket.Dial(req.Context(), u.String(), nil)
 	log.Println("Dialing:", u.String())
 	if err != nil {
-		log.Println("Error dialing websocket:", err)
+		errorLog.Println("Error dialing websocket:", err)
 		return
 	}
 
@@ -177,12 +198,12 @@ func handleWebsocket(r http.ResponseWriter, req *http.Request, selectedUpstream 
 		for {
 			upstreamDatatype, upstreamData, err := upstream.Read(req.Context())
 			if err != nil {
-				log.Println("Error get upstream reader:", err)
+				errorLog.Println("Error get upstream reader:", err)
 				return
 			}
 			err = source.Write(req.Context(), upstreamDatatype, upstreamData)
 			if err != nil {
-				log.Println("Error write upstream:", err)
+				errorLog.Println("Error write upstream:", err)
 				return
 			}
 		}
@@ -193,12 +214,12 @@ func handleWebsocket(r http.ResponseWriter, req *http.Request, selectedUpstream 
 		for {
 			sourceDatatype, sourceData, err := source.Read(req.Context())
 			if err != nil {
-				log.Println("Error get websocket reader:", err)
+				errorLog.Println("Error get websocket reader:", err)
 				return
 			}
 			err = upstream.Write(req.Context(), sourceDatatype, sourceData)
 			if err != nil {
-				log.Println("Error write downstream:", err)
+				errorLog.Println("Error write downstream:", err)
 				return
 			}
 		}
