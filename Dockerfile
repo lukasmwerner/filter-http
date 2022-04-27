@@ -23,5 +23,6 @@ COPY --from=build /out/app /
 COPY config.yaml /
 
 EXPOSE 80
+EXPOSE 9000
 
 ENTRYPOINT [ "/app" ]

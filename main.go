@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +79,13 @@ func main() {
 			fmt.Printf("%s: %s -> %v\n", k, domainMap[k].Routes[i].Route, domainMap[k].Routes[i].Upstreams)
 		}
 	}
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", configHandler)
+		http.ListenAndServe(":9000", mux)
+	}()
+
 	fmt.Println()
 	fmt.Println("Starting server...")
 	http.HandleFunc("/", webHandler)
@@ -242,4 +250,128 @@ func handleWebsocket(r http.ResponseWriter, req *http.Request, selectedUpstream 
 			}
 		}
 	}()
+}
+
+func configHandler(w http.ResponseWriter, r *http.Request) {
+	accessLog.Printf("%s %s %s", r.Method, r.Host, r.URL.Path)
+	if r.Method == "GET" {
+
+		if r.URL.Query().Has("format") && r.URL.Query().Get("format") == "yaml" {
+			w.Header().Set("Content-Type", "application/yaml")
+			data, _ := yaml.Marshal(config)
+			w.Write(data)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(config)
+		}
+		return
+	}
+	if r.Method == "POST" {
+
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewDecoder(r.Body).Decode(&config)
+			data, _ := json.Marshal(config)
+			w.Write(data)
+			return
+		}
+
+		matcher := urlpath.New("/config/:server/route/:route/upstream/:upstream")
+		match, ok := matcher.Match(r.URL.Path)
+		if !ok {
+			matcher := urlpath.New("/config/:server/route/:route/upstream")
+			match, ok := matcher.Match(r.URL.Path)
+			if !ok {
+				matcher := urlpath.New("/config/:server/route/:route")
+				match, ok := matcher.Match(r.URL.Path)
+				if !ok {
+					matcher := urlpath.New("/config/:server")
+					match, ok := matcher.Match(r.URL.Path)
+					if !ok {
+						http.Error(w, "Invalid path", http.StatusBadRequest)
+						return
+					}
+					serverindex, err := strconv.Atoi(match.Params["server"])
+					if err != nil {
+						http.Error(w, "Invalid server", http.StatusBadRequest)
+						return
+					}
+					var server Server
+					err = json.NewDecoder(r.Body).Decode(&server)
+					if err != nil {
+						http.Error(w, "Invalid server", http.StatusBadRequest)
+						return
+					}
+
+					config.Servers[serverindex] = server
+					sort.Slice(config.Servers[serverindex].Routes, func(a, b int) bool {
+						return len(config.Servers[serverindex].Routes[a].Route) > len(config.Servers[serverindex].Routes[b].Route)
+					})
+					domainMap[config.Servers[serverindex].Host] = &config.Servers[serverindex]
+					return
+
+				}
+				server, err := strconv.Atoi(match.Params["server"])
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Invalid server: %s", match.Params["server"]), http.StatusBadRequest)
+					return
+				}
+				routeindex, err := strconv.Atoi(match.Params["route"])
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Invalid route: %s", match.Params["route"]), http.StatusBadRequest)
+					return
+				}
+				var route Route
+				err = json.NewDecoder(r.Body).Decode(&route)
+				if err != nil {
+					http.Error(w, "Invalid upstreams", http.StatusBadRequest)
+					return
+				}
+				config.Servers[server].Routes[routeindex] = route
+				sort.Slice(config.Servers[server].Routes, func(a, b int) bool {
+					return len(config.Servers[server].Routes[a].Route) > len(config.Servers[server].Routes[b].Route)
+				})
+				domainMap[config.Servers[server].Host] = &config.Servers[server]
+				return
+			}
+			server, err := strconv.Atoi(match.Params["server"])
+			if err != nil {
+				http.Error(w, "Invalid server", http.StatusBadRequest)
+				return
+			}
+			route, err := strconv.Atoi(match.Params["route"])
+			if err != nil {
+				http.Error(w, "Invalid route", http.StatusBadRequest)
+				return
+			}
+			var upstreams []string
+			err = json.NewDecoder(r.Body).Decode(&upstreams)
+			if err != nil {
+				http.Error(w, "Invalid upstreams", http.StatusBadRequest)
+				return
+			}
+			config.Servers[server].Routes[route].Upstreams = upstreams
+			domainMap[config.Servers[server].Host] = &config.Servers[server]
+			return
+		}
+		server, err := strconv.Atoi(match.Params["server"])
+		if err != nil {
+			http.Error(w, "Invalid server", http.StatusBadRequest)
+			return
+		}
+		route, err := strconv.Atoi(match.Params["route"])
+		if err != nil {
+			http.Error(w, "Invalid route", http.StatusBadRequest)
+			return
+		}
+		upstream, err := strconv.Atoi(match.Params["upstream"])
+		if err != nil {
+			http.Error(w, "Invalid upstream", http.StatusBadRequest)
+			return
+		}
+		data, _ := io.ReadAll(r.Body)
+		config.Servers[server].Routes[route].Upstreams[upstream] = string(data)
+		domainMap[config.Servers[server].Host] = &config.Servers[server]
+		return
+	}
 }
