@@ -1,0 +1,44 @@
+{
+    "servers": [
+        {
+            "host": "local.just.here",
+            "routes": [
+                {
+                    "route": "/*",
+                    "upstreams": ["http://nginx1", "http://nginx2"]
+                },
+                {
+                    "route": "/api/*",
+                    "upstreams": ["http://sampleservice:8084"]
+                }
+            ]
+        },
+        {
+            "host": "local.notreal.xyz",
+            "routes": [
+                {
+                    "route": "/*",
+                    "upstreams": ["http://httpd"]
+                }
+            ]
+        },
+        {
+            "host": "localhost:8080",
+            "routes": [
+                {
+                    "route": "/*",
+                    "upstreams": ["http://nginx1", "http://nginx2"]
+                }
+            ]
+        },
+        {
+            "host": "abc.localhost:8080",
+            "routes": [
+                {
+                    "route": "/*",
+                    "upstreams": ["http://httpd"]
+                }
+            ]
+        }
+    ]
+}

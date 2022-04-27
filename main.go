@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -29,6 +30,23 @@ func main() {
 
 	f, err := os.Open("config.yaml")
 	if err != nil {
+		f, err := os.Open("config.yml")
+		if err != nil {
+			f, err := os.Open("config.json")
+			if err != nil {
+				panic(err)
+			}
+			dec := json.NewDecoder(f)
+			err = dec.Decode(&config)
+			if err != nil {
+				panic(err)
+			}
+
+		}
+		err = yaml.NewDecoder(f).Decode(&config)
+		if err != nil {
+			panic(err)
+		}
 		panic(err)
 	}
 	defer f.Close()
