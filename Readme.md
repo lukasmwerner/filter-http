@@ -36,3 +36,10 @@ and here is a sample JSON based config
   ]
 }
 ```
+
+
+Filter-HTTP runs the following services on the following ports
+| Service | Port | Description |
+| ------- | ---- | ----------- |
+| HTTP Proxy | 80 | The standard HTTP upstream handler |
+| HTTP Config Service | 9000 | used for live configuring of the server just like caddy |
